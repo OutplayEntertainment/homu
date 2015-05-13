@@ -154,6 +154,42 @@ def rollup():
     else:
         redirect(pull.html_url)
 
+@post('/quay')
+def quay():
+    logger = g.logger.getChild('quay')
+    response.content_type = 'text/plain'
+    info = request.json
+    lazy_debug(logger, lambda: 'info: {}'.format(utils.remove_url_keys_from_json(info)))
+
+    commit_sha = info['trigger_metadata']['commit_sha']
+    try:
+        state, repo_label = find_state(commit_sha)
+    except ValueError:
+        lazy_debug(logger,
+                   lambda: 'Invalid commit ID from Quay: {}'.format(commit_sha))
+        return 'OK'
+
+    if 'quay' not in state.build_res:
+        lazy_debug(logger,
+                   lambda: 'quay is not a monitored target for {}'.format(state))
+        return 'OK'
+
+    secret = g.repo_cfgs[repo_label]['quay']['secret']
+    username = g.repo_cfgs[repo_label]['quay']['username']
+    auth_header = request.headers['Authorization']
+    code = requests.auth._basic_auth_str(username, secret)
+    if auth_header != code:
+        logger.warn('authorization failed for {}; header = {}, computed = {}'
+                    .format(state, auth_header, code))
+        abort(401, 'Authorization failed')
+
+    error_message = info.get('error_message')
+    succ = error_message is None
+
+    report_build_res(succ, info['homepage'], 'quay', repo_label,
+                     state, logger, error_message)
+    return 'OK'
+
 @post('/github')
 def github():
     logger = g.logger.getChild('github')
@@ -292,7 +328,7 @@ def github():
 
     return 'OK'
 
-def report_build_res(succ, url, builder, repo_label, state, logger):
+def report_build_res(succ, url, builder, repo_label, state, logger, info=None):
     lazy_debug(logger,
                lambda: 'build result {}: builder = {}, succ = {}, current build_res = {}'
                             .format(state, builder, succ, state.build_res_summary()))
@@ -326,9 +362,16 @@ def report_build_res(succ, url, builder, repo_label, state, logger):
         if state.status == 'pending':
             state.set_status('failure')
             desc = 'Test failed'
-            utils.github_create_status(state.repo, state.head_sha, 'failure', url, desc, context='homu')
+            if info:
+                full_desc = '{}: \n```{}```'.format(desc, info)
+            else:
+                full_desc = desc
+            utils.github_create_status(state.repo, state.head_sha, 'failure',
+                                       url, desc, context='homu')
 
-            state.add_comment(':broken_heart: {} - [{}]({})'.format(desc, builder, url))
+            state.add_comment(':broken_heart: {} - [{}]({})'.format(full_desc,
+                                                                    builder,
+                                                                    url))
 
     g.queue_handler()
 
