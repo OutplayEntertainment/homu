@@ -218,24 +218,26 @@ def parse_commands(body, username, repo_cfg, state, my_username, db, *, realtime
             state.rollup = word == 'rollup'
 
         elif word == 'force' and realtime:
-            with buildbot_sess(repo_cfg) as sess:
-                res = sess.post(repo_cfg['buildbot']['url'] + '/builders/_selected/stopselected', allow_redirects=False, data={
-                    'selected': repo_cfg['buildbot']['builders'],
-                    'comments': INTERRUPTED_BY_HOMU_FMT.format(int(time.time())),
-                })
+            if 'buildbot' in repo_cfg:
+                with buildbot_sess(repo_cfg) as sess:
+                    res = sess.post(repo_cfg['buildbot']['url'] + '/builders/_selected/stopselected', allow_redirects=False, data={
+                        'selected': repo_cfg['buildbot']['builders'],
+                        'comments': INTERRUPTED_BY_HOMU_FMT.format(int(time.time())),
+                    })
 
-            if 'authzfail' in res.text:
-                err = 'Authorization failed'
-            else:
-                mat = re.search('(?s)<div class="error">(.*?)</div>', res.text)
-                if mat:
-                    err = mat.group(1).strip()
-                    if not err: err = 'Unknown error'
+                if 'authzfail' in res.text:
+                    err = 'Authorization failed'
                 else:
-                    err = ''
-
-            if err:
-                state.add_comment(':bomb: Buildbot returned an error: `{}`'.format(err))
+                    mat = re.search('(?s)<div class="error">(.*?)</div>', res.text)
+                    if mat:
+                        err = mat.group(1).strip()
+                        if not err: err = 'Unknown error'
+                    else:
+                        err = ''
+                if err:
+                    state.add_comment(':bomb: Buildbot returned an error: `{}`'.format(err))
+            else:
+                state.add_comment(':disappointed: "force" is only available for buildbot')
 
         elif word == 'clean' and realtime:
             state.merge_sha = ''
