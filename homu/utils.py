@@ -46,3 +46,8 @@ def remove_url_keys_from_json(json):
 def lazy_debug(logger, f):
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f())
+
+def update_in(dkt, key, func):
+    if key in dkt:
+        dkt[key] = func(dkt[key])
+    return dkt

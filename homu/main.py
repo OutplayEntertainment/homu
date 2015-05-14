@@ -44,6 +44,13 @@ def db_query(db, *args):
     with db_query_lock:
         db.execute(*args)
 
+def db_fetch_dicts(db, *args):
+    with db_query_lock:
+        curs = db.execute(*args)
+        desc = (n[0] for n in db.description)
+        for row in curs:
+            yield {k:v for (k, v) in zip(desc, row) if v is not None}
+
 class PullReqState:
     num = 0
     priority = 0
@@ -510,15 +517,44 @@ def main():
         UNIQUE (repo, num)
     )''')
 
+    # label set automatically when creating repo
+    db_query(db, '''CREATE TABLE IF NOT EXISTS repo (
+        label TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        reviewers TEXT NOT NULL,
+        github TEXT NOT NULL,
+        branch TEXT,
+        builder TEXT NOT NULL,
+        builder_settings TEXT NOT NULL,
+        UNIQUE (label),
+        UNIQUE (owner, name)
+    )''')
+
     logger.info('Retrieving pull requests...')
 
-    for repo_label, repo_cfg in cfg['repo'].items():
-        repo = gh.repository(repo_cfg['owner'], repo_cfg['name'])
-
-        states[repo_label] = {}
-        repos[repo_label] = repo
+    # Initialize repo cfg from a) cfg b) db
+    # a) read cfg
+    for repo_label, repo_cfg in cfg.get('repo', {}).items():
+        # add key 'label' to be consistent with confs read from db
+        repo_cfg['label'] = repo_label
         repo_cfgs[repo_label] = repo_cfg
 
+    # b) load conf from db
+    for repo_cfg in db_fetch_dicts(db, 'SELECT * from repo'):
+        repo_label = repo_cfg['label']
+        # keep builder settings structure in sync with those loaded from cfg
+        builder_kind = repo_cfg.pop('builder')
+        repo_cfg[builder_kind] = json.loads(repo_cfg.pop('builder_settings'))
+        # convert github/branches/reviewers from json:
+        for key in ['github', 'branches', 'reviewers']:
+            utils.update_in(repo_cfg, key, json.loads)
+        repo_cfgs[repo_label] = repo_cfg
+
+    for repo_label, repo_cfg in repo_cfgs.items():
+        repos[repo_label] = repo = gh.repository(repo_cfg['owner'],
+                                                 repo_cfg['name'])
+        states[repo_label] = {}
         for pull in repo.iter_pulls(state='open'):
             db_query(db, 'SELECT status FROM state WHERE repo = ? AND num = ?', [repo_label, pull.number])
             row = db.fetchone()
