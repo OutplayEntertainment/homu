@@ -659,7 +659,10 @@ def main():
             return process_queue(states, repos, repo_cfgs, logger, buildbot_slots, db)
 
     from . import server
-    Thread(target=server.start, args=[cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots, my_username, db, repo_labels, mergeable_que]).start()
+    Thread(target=server.start, args=[cfg, states, queue_handler,
+                                      repo_cfgs, repos, logger, buildbot_slots,
+                                      my_username, db, repo_labels,
+                                      mergeable_que, gh]).start()
 
     Thread(target=fetch_mergeability, args=[mergeable_que]).start()
 

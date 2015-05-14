@@ -51,3 +51,8 @@ def update_in(dkt, key, func):
     if key in dkt:
         dkt[key] = func(dkt[key])
     return dkt
+
+def merge_dicts(fst, snd):
+    res = dict(fst)
+    res.update(snd)
+    return res

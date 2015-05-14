@@ -8,10 +8,12 @@ import github3
 import jinja2
 import requests
 import pkg_resources
-from bottle import get, post, run, request, redirect, abort, response
+from bottle import get, post, put, delete, run, request, redirect, abort, response
 import hashlib
+import functools
 
 import bottle; bottle.BaseRequest.MEMFILE_MAX = 1024 * 1024 * 10
+
 
 class G: pass
 g = G()
@@ -523,7 +525,124 @@ def travis():
 
     return 'OK'
 
-def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots, my_username, db, repo_labels, mergeable_que):
+# Admin methods are protected via Basic auth. To access them one may use curl:
+# `curl -H"Authorization: <username> <secret>" "url"`.
+# For better security one may setup nginx in front of this service and listen
+# for /admin/* requestr only from certain ip (to prevent accessing this API from
+# public network, for example)
+def check_admin_requirements(json=False):
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            logger = g.logger.getChild('admin')
+            lazy_debug(logger, lambda: 'Got `{}` request for: {}'.format(
+                request.method, request.path))
+            auth_header = request.headers.get('Authorization')
+            if not auth_header:
+                logger.warning('Request for {} without Authorization header'.format(
+                    request.path))
+                return abort(401, 'Authorization required')
+            check_header = '{} {}'.format(g.cfg['admin']['username'],
+                                          g.cfg['admin']['secret'])
+            if auth_header != check_header:
+                logger.warning('authorization failed: have {}, want = {}'.format(
+                    auth_header, check_header))
+                return abort(401, 'Authorization failed')
+            if json:
+                if request.json is None:
+                    return abort(415, 'Content-type is not accepted')
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@put('/admin/repo')
+@check_admin_requirements(json=True)
+def admin_add_repo():
+    logger = g.logger.getChild('admin')
+    response.content_type = 'text/plain'
+    info = request.json
+    lazy_debug(logger, lambda: 'Request for {}; payload:{}'.format(request.path,
+                                                                   info))
+    # extract required params
+    # TODO: just save info as repo_cfg
+    try:
+        owner = info['owner']
+        name = info['name']
+        reviewers = info['reviewers']
+        github = info['github']
+        builder = info['builder']
+        builder_settings = info[builder]
+    except KeyError as e:
+        abort(422, 'Required parameter `{}` not found'.format(e.args[0]))
+    repo_label = '{}/{}'.format(info['owner'], info['name'])
+    # Return if we already have this repo
+    # TODO: may want to update some fields in the future
+    if repo_label in g.repo_cfgs:
+        response.status = 200
+        return repo_label
+    branch = info.get('branch')
+    repo_cfg = {
+        'label': repo_label,
+        'owner': owner,
+        'name': name,
+        'reviewers': reviewers,
+        'github': github,
+    }
+    if branch:
+        repo_cfg['branch'] = branch
+    repo_cfg[builder] = builder_settings
+    # TODO: validate keys?
+    # Especially for nested dicts; we want to have quay namespace for repo
+    try:
+        g.repos[repo_label] = repo = g.gh.repository(repo_cfg['owner'],
+                                                     repo_cfg['name'])
+    except github3.models.GitHubError as e:
+        abort(e.code, e.msg)
+    # register new configuration
+    g.repo_cfgs[repo_label] = repo_cfg
+    # TODO: probably we want to fetch pull requests?
+    g.states[repo_label] = {}
+    g.repo_labels[repo.owner.login, repo.name] = repo_label
+    # save configuration to db
+    db_query(g.db, '''INSERT INTO repo (label, owner, name,
+                                        reviewers, github, branch,
+                                        builder, builder_settings
+                                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+             [repo_label, owner, name,
+              json.dumps(reviewers), json.dumps(github),
+              json.dumps(branch) if branch else None,
+              builder, json.dumps(builder_settings)])
+    # TODO setup webhooks and all that stuff
+    response.status = 201
+    return repo_label
+
+@delete('/admin/repo/<repo_label:path>')
+@check_admin_requirements()
+def admin_delete_repo(repo_label):
+    response.content_type = 'text/plain'
+    if repo_label in g.repo_cfgs:
+        # TODO: maybe cancel build and all that?
+        # TODO: remove webhooks
+        repo = g.repos[repo_label]
+        del g.repo_cfgs[repo_label]
+        del g.states[repo_label]
+        del g.repo_labels[repo.owner.login, repo.name]
+        del g.repos[repo_label]
+        db_query(g.db, 'DELETE from repo where label = ?', [repo_label])
+        return repo_label
+    else:
+        abort(404, repo_label)
+
+@get('/admin/repo/<repo_label:path>')
+@check_admin_requirements()
+def admin_ger_repo(repo_label):
+    if repo_label in g.repo_cfgs:
+        return utils.merge_dicts(g.repo_cfgs[repo_label], {'label': repo_label})
+    else:
+        abort(404, repo_label)
+
+def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots,
+          my_username, db, repo_labels, mergeable_que, gh):
     env = jinja2.Environment(
         loader = jinja2.FileSystemLoader(pkg_resources.resource_filename(__name__, 'html')),
         autoescape = True,
@@ -542,6 +661,7 @@ def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots, 
     g.tpls = tpls
     g.my_username = my_username
     g.db = db
+    g.gh = gh
     g.repo_labels = repo_labels
     g.mergeable_que = mergeable_que
 
