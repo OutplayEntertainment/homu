@@ -15,6 +15,11 @@ app_client_secret = ""
 # The port homu listens on
 port = 54856
 
+[admin]
+# The secret & username to call admin API
+secret = ''
+username = 'admin'
+
 # An example configuration for repository (there can be many of these)
 [repo.NAME]
 
