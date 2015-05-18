@@ -47,12 +47,63 @@ def lazy_debug(logger, f):
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f())
 
+def maybe_call(dkt, key, func):
+    if key in dkt:
+        return func(dkt[key])
+
 def update_in(dkt, key, func):
     if key in dkt:
         dkt[key] = func(dkt[key])
     return dkt
 
-def merge_dicts(fst, snd):
+def merge_dicts(fst, snd=None, **kwargs):
+    snd = snd or kwargs
     res = dict(fst)
     res.update(snd)
     return res
+
+def random_string(n=20):
+    return binascii.b2a_hex(os.urandom(n)).decode()
+
+# Make url from components:
+# make_url('http', '127.0.0.1', 12345, '/path') -> 'http://127.0.0.1:12345/path'
+# make_url('http', '127.0.0.1', '/path') -> 'http://127.0.0.1/path'
+# make_url('http', '127.0.0.1') -> 'http://127.0.0.1/'
+# make_url('http', '127.0.0.1:12345') -> 'http://127.0.0.1:12345/'
+# make_url('http', '127.0.0.1', 12345, '/path', {'var':'val'}) -> 'http://127.0.0.1:12345/path?var=val'
+# make_url('http', '127.0.0.1', query={'var':'val'}) -> 'http://127.0.0.1/?var=val'
+# etc.
+# NOTE: last *port* arg to catch cases like make_url(**conf)
+def make_url(scheme, hostname, port_or_path=None, path='/',
+             query=None, username=None, password=None, port=None):
+    if port_or_path and isinstance(port_or_path, int):
+        port = port_or_path
+    else:
+        port = port
+        path = port_or_path or path
+    address = '{}:{}'.format(hostname, port) if port else hostname
+    if username:
+        if password:
+            password = ':{}'.format(password)
+        else:
+            password = ''
+        netloc = '{}{}@{}'.format(urllib.parse.quote(username), password,
+                                  address)
+    else:
+        netloc = address
+    query = urllib.parse.urlencode(query) if query else ''
+    return urllib.parse.urlunsplit((scheme, netloc, path, query, ''))
+
+def join_paths(*paths):
+    # Can't use os.path.join, because *in theory* we can be on some platform
+    # with different separator. So explicitly call posixpath.join
+    return posixpath.join(*paths)
+
+def get_query(url):
+    return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+
+def webhook_url(cfg, path, username=None, password=None):
+    return make_url(**merge_dicts(cfg['external'],
+                                  path=path,
+                                  username=username,
+                                  password=password))

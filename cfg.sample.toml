@@ -10,6 +10,13 @@ access_token = ""
 app_client_id = ""
 app_client_secret = ""
 
+# As we create webhooks automatically, we need to know our external address
+[external]
+hostname = "external IP"
+port = 80
+scheme = "https"
+
+
 [web]
 
 # The port homu listens on
@@ -19,6 +26,16 @@ port = 54856
 # The secret & username to call admin API
 secret = ''
 username = 'admin'
+
+[quay]
+# access token to use API
+access_token = ''
+# namespace to create repos in
+namespace = 'lhtest'
+# for some API methods we can't use access token, and we need to use username/pass
+# That's a shame
+username = ''
+password = ''
 
 # An example configuration for repository (there can be many of these)
 [repo.NAME]

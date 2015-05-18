@@ -311,6 +311,8 @@ def start_build(state, repo_cfgs, buildbot_slots, logger, db):
     elif 'quay' in repo_cfg:
         branch = repo_cfg.get('branch', {}).get('auto', 'auto')
         builders = ['quay']
+        # We do not notify quay here; we wait for push event from github instead
+        # this way we can be sure quay will be able to fetch merge commit
     else:
         raise RuntimeError('Invalid configuration')
 
