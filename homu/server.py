@@ -210,8 +210,12 @@ def github():
 
     owner_info = info['repository']['owner']
     owner = owner_info.get('login') or owner_info['name']
-    repo_label = g.repo_labels[owner, info['repository']['name']]
-    repo_cfg = g.repo_cfgs[repo_label]
+    try:
+        repo_label = g.repo_labels[owner, info['repository']['name']]
+        repo_cfg = g.repo_cfgs[repo_label]
+    except KeyError:
+        abort(404, 'Not found repo {}/{}'.format(owner,
+                                                 info['repository']['name']))
 
     hmac_method, hmac_sig = request.headers['X-Hub-Signature'].split('=')
     if hmac_sig != hmac.new(
@@ -541,7 +545,9 @@ def travis():
     lazy_debug(logger, lambda: 'state: {}, {}'.format(state, state.build_res_summary()))
 
     if 'travis' not in state.build_res:
-        lazy_debug(logger, lambda: 'travis is not a monitored target for %s', state)
+        lazy_debug(logger,
+                   lambda: 'travis is not a monitored target for {}'.format(
+                       state))
         return 'OK'
 
     token = g.repo_cfgs[repo_label]['travis']['token']
@@ -778,8 +784,8 @@ def admin_ger_repo(repo_label):
 def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots,
           my_username, db, repo_labels, mergeable_que, gh):
     env = jinja2.Environment(
-        loader = jinja2.FileSystemLoader(pkg_resources.resource_filename(__name__, 'html')),
-        autoescape = True,
+        loader=jinja2.FileSystemLoader(pkg_resources.resource_filename(__name__, 'html')),
+        autoescape=True,
     )
     tpls = {}
     tpls['index'] = env.get_template('index.html')
@@ -799,6 +805,6 @@ def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots,
     g.repo_labels = repo_labels
     g.mergeable_que = mergeable_que
 
-    run(host=cfg['web'].get('host', ''),
+    run(host=cfg['web'].get('hostname', ''),
         port=cfg['web']['port'],
         server='waitress')

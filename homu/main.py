@@ -463,7 +463,7 @@ def fetch_mergeability(mergeable_que):
             mergeable_que.task_done()
 
 def arguments():
-    parser = argparse.ArgumentParser(description =
+    parser = argparse.ArgumentParser(description=
                                      'A bot that integrates with GitHub and '
                                      'your favorite continuous integration service')
     parser.add_argument('-v', '--verbose',
