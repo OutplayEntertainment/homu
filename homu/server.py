@@ -604,14 +604,18 @@ def check_admin_requirements(json=False):
 
 # TODO: move and rename
 # TODO: Create context manager
+# We ignore any errors here, and just log them
+# This way we will be able, for example, to delete repo manually
+# from quay and then unregister repo here
 def unregister_quay(cfg, repo, github, quay_settings):
+    ignore = functools.partial(utils.ignore, logger=g.logger)
     q = quay1.Quay(cfg['quay'])
     hook = utils.maybe_call(github, 'webhook_id', repo.hook)
     if hook:
-        hook.delete()
-    utils.maybe_call(quay_settings, 'ssh', repo.delete_key)
+        ignore(lambda: hook.delete())
+    ignore(lambda: utils.maybe_call(quay_settings, 'ssh', repo.delete_key))
     # build trigger and webhooks will go away along with repo
-    utils.maybe_call(quay_settings, 'name', q.delete_repo)
+    ignore(lambda: utils.maybe_call(quay_settings, 'name', q.delete_repo))
 
 def unregister_repo(repo_label):
     repo = g.repos[repo_label]

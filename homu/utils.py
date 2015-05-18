@@ -57,6 +57,14 @@ def maybe_call(dkt, key, func):
     if key in dkt:
         return func(dkt[key])
 
+# this thing could be a macros in the better world
+def ignore(func, error=Exception, logger=None):
+    try:
+        return func()
+    except error as e:
+        if logger:
+            logger.warning(e)
+
 def update_in(dkt, key, func):
     if key in dkt:
         dkt[key] = func(dkt[key])
