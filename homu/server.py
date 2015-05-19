@@ -21,6 +21,57 @@ DEFAULT_BRANCHES = ['master', 'develop', 'auto']
 class G: pass
 g = G()
 
+# Dict with routines for auto register/unregister in builder.
+# builder_type => (reg_func, unreg_func)
+# reg func should modify settings in-place, to allow unregistration at any point
+AUTO_BUILDERS = {
+    'quay': (quay1.register, quay1.unregister)
+}
+
+def register_in_buider(repo_label):
+    builder_kind = g.repo_cfgs[repo_label]['builder']
+    if builder_kind in AUTO_BUILDERS:
+        (reg_func, _) = AUTO_BUILDERS[builder_kind]
+        repo = g.repos[repo_label]
+        settings = g.repo_cfgs[repo_label][builder_kind]
+        reg_func(g, repo, settings)
+    else:
+        g.logger.warning('Cannot register repo {} in {} automatically'.format(
+            repo_label, builder_kind))
+
+def unregister_in_buider(repo_label):
+    builder_kind = g.repo_cfgs[repo_label]['builder']
+    if builder_kind in AUTO_BUILDERS:
+        (_, unreg_func) = AUTO_BUILDERS[builder_kind]
+        repo = g.repos[repo_label]
+        settings = g.repo_cfgs[repo_label][builder_kind]
+        unreg_func(g, repo, settings)
+    else:
+        g.logger.warning('Cannot register repo {} in {} automatically'.format(
+            repo_label, builder_kind))
+
+# We ignore any errors here, and just log them
+# This way we will be able, for example, to delete hooks manually
+# from github and then unregister repo here
+def unregister_in_github(repo_label):
+    repo = g.repos[repo_label]
+    settings = g.repo_cfgs[repo_label]['github']
+    hook = utils.maybe_call(settings, 'webhook_id', repo.hook)
+    if hook:
+        utils.ignore(lambda: hook.delete(), logger=g.logger)
+
+def forget_repo(repo_label):
+    repo = g.repos[repo_label]
+    del g.repo_cfgs[repo_label]
+    del g.states[repo_label]
+    del g.repo_labels[repo.owner.login, repo.name]
+    del g.repos[repo_label]
+
+def unregister_and_forget(repo_label):
+    unregister_in_github(repo_label)
+    unregister_in_buider(repo_label)
+    forget_repo(repo_label)
+
 def find_state(sha):
     for repo_label, repo_states in g.states.items():
         for state in repo_states.values():
@@ -604,25 +655,8 @@ def check_admin_requirements(json=False):
 
 # TODO: move and rename
 # TODO: Create context manager
-# We ignore any errors here, and just log them
-# This way we will be able, for example, to delete repo manually
-# from quay and then unregister repo here
-def unregister_quay(cfg, repo, github, quay_settings):
-    ignore = functools.partial(utils.ignore, logger=g.logger)
-    q = quay1.Quay(cfg['quay'])
-    hook = utils.maybe_call(github, 'webhook_id', repo.hook)
-    if hook:
-        ignore(lambda: hook.delete())
-    ignore(lambda: utils.maybe_call(quay_settings, 'ssh', repo.delete_key))
-    # build trigger and webhooks will go away along with repo
-    ignore(lambda: utils.maybe_call(quay_settings, 'name', q.delete_repo))
 
-def unregister_repo(repo_label):
-    repo = g.repos[repo_label]
-    del g.repo_cfgs[repo_label]
-    del g.states[repo_label]
-    del g.repo_labels[repo.owner.login, repo.name]
-    del g.repos[repo_label]
+
 
 @put('/admin/repo')
 @check_admin_requirements(json=True)
@@ -655,6 +689,7 @@ def admin_add_repo():
         'name': name,
         'reviewers': reviewers,
         'github': github,
+        'builder': builder
     }
     if branch:
         repo_cfg['branch'] = branch
@@ -670,9 +705,12 @@ def admin_add_repo():
     g.repos[repo_label] = repo
     g.states[repo_label] = {}
     g.repo_labels[repo.owner.login, repo.name] = repo_label
-
+    # save branch info
+    # Always build master/develop/auto
+    builder_settings['build_branches'] = builder_settings.get('build_branches',
+                                                              []) + DEFAULT_BRANCHES
     gh_secret = github.get('secret', utils.random_string())
-    gh_webhook = utils.webhook_url(g.cfg, 'github')
+    gh_webhook = g.make_webhook_url('github')
     lazy_debug(logger, lambda: 'Going to register github webhook: {}'.format(
         gh_webhook))
     try:
@@ -682,54 +720,19 @@ def admin_add_repo():
                               'issue_comment', 'pull_request_review_comment'],
                              True)
     except github3.models.GitHubError as e:
-        unregister_repo(repo_label)
+        forget_repo(repo_label)
         abort(e.code, e.msg)
     # Save hook id so we can remove it later
     github['webhook_id'] = h.id
     # ensure we have secret stored
     github['secret'] = gh_secret
     # Register in quay
-    # TODO: dispatch by builder type and provide `register function`
-    q = quay1.Quay(g.cfg['quay'])
     try:
-        logger.info('Going to create quay repo: {}'.format(repo.name))
-        repo_info = q.create_repo(repo.name,
-                                  private=builder_settings['private'])
-        # save the name, in case Quay will decide to change smth
-        builder_settings['name'] = repo_info['name']
-        builder_settings['url'] = repo_info['url']
-        logger.info('Quay repo created: {} '.format(repo_info))
-        q_name = repo_info['name']
-        logger.info('Going to create build trigger for: {} in {}'.format(
-            repo.ssh_url, q_name))
-        q_build_trigger = q.create_build_trigger(q_name, repo.ssh_url)
-        logger.info('Build trigger created in {}: {}'.format(
-            q_name, q_build_trigger['id']))
-        # Web hook to call to trigger build on push
-        builder_settings['webhook'] = q_build_trigger['webhook']
-        # TODO: maybe we do not need to store build trigger id
-        builder_settings['builder_id'] = q_build_trigger['id']
-        logger.info('Going to register deploy key for {}'.format(repo_label))
-        deploy_key = repo.create_key('Quay.io Builder', q_build_trigger['ssh'])
-        # Save the key id, so we can remove it later
-        builder_settings['ssh'] = deploy_key.id
-        builder_settings['secret'] = quay_secret = builder_settings.get(
-            'secret', utils.random_string())
-        builder_settings['username'] = quay_username = builder_settings.get(
-            'username', utils.random_string())
-        quay_webhook = utils.webhook_url(g.cfg, 'quay',
-                                         quay_username, quay_secret)
-        logger.info('Registering quay status webhooks in {}'.format(q_name))
-        qw1 = q.add_web_hook(q_name, quay1.EVENT_BUILD_SUCCESS, quay_webhook)
-        qw2 = q.add_web_hook(q_name, quay1.EVENT_BUILD_FAILURE, quay_webhook)
-        # Save hooks id, so we can delete them
-        # TODO: maybe we do not need to store them, as we can remove repo
-        builder_settings['status_webhook_ids'] = [qw1, qw2]
-        logger.info('Registered repo in quay: {} - {}'.format(repo_label,
-                                                              repo_info['url']))
+        register_in_buider(repo_label)
+        lazy_debug(logger, lambda: 'Registered {} in builder {}: {}'.format(
+            repo_label, repo_cfg['builder'], builder_settings))
     except Exception as e:
-        unregister_quay(g.cfg, repo, github, builder_settings)
-        unregister_repo(repo_label)
+        unregister_and_forget(repo_label)
         # We want to return appropriate response codes when we can,
         # so we will catch github/requests errors
         try:
@@ -738,10 +741,6 @@ def admin_add_repo():
             abort(e.response.status_code, e.response.text)
         except github3.GitHubError as e:
             abort(e.code, e.msg)
-    # save branch info
-    # Always build master/develop/auto
-    builder_settings['build_branches'] = builder_settings.get('build_branches',
-                                                              []) + DEFAULT_BRANCHES
     try:
         # save configuration to db
         db_query(g.db, '''INSERT INTO repo (label, owner, name,
@@ -753,8 +752,7 @@ def admin_add_repo():
                   json.dumps(branch) if branch else None,
                   builder, json.dumps(builder_settings)])
     except sqlite3.Error:
-        unregister_repo(repo_label)
-        unregister_quay(g.cfg, repo, github, builder_settings)
+        unregister_and_forget(repo_label)
         raise
     # TODO: probably we want to fetch pull requests?
     response.status = 201
@@ -766,13 +764,10 @@ def admin_delete_repo(repo_label):
     response.content_type = 'text/plain'
     if repo_label in g.repo_cfgs:
         # TODO: maybe cancel build and all that?
-        repo = g.repos[repo_label]
-        # TODO: make it better
-        unregister_quay(g.cfg, repo,
-                        g.repo_cfgs[repo_label]['github'],
-                        g.repo_cfgs[repo_label]['quay'])
-        unregister_repo(repo_label)
+        unregister_and_forget(repo_label)
         db_query(g.db, 'DELETE from repo where label = ?', [repo_label])
+        lazy_debug(logger, lambda: 'Repo deleted and unregistered: {}'.format(
+            repo_label))
         return repo_label
     else:
         abort(404, repo_label)
@@ -795,6 +790,12 @@ def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots,
     tpls['index'] = env.get_template('index.html')
     tpls['queue'] = env.get_template('queue.html')
 
+    def make_webhook_url(path, username=None, password=None):
+        return utils.make_url(**utils.merge_dicts(g.cfg['external'],
+                                                  path=path,
+                                                  username=username,
+                                                  password=password))
+    # XXX: this smells
     g.cfg = cfg
     g.states = states
     g.queue_handler = queue_handler
@@ -806,6 +807,7 @@ def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots,
     g.my_username = my_username
     g.db = db
     g.gh = gh
+    g.make_webhook_url = make_webhook_url
     g.repo_labels = repo_labels
     g.mergeable_que = mergeable_que
 

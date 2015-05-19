@@ -540,13 +540,17 @@ def main():
     for repo_label, repo_cfg in cfg.get('repo', {}).items():
         # add key 'label' to be consistent with confs read from db
         repo_cfg['label'] = repo_label
+        # keep builder settings structure in sync with those loaded from db
+        # add `builder` key to use as dispatch elsewhere
+        # Use first found builder settings as builder kind
+        repo_cfg['builder'] = next(k for k in ['quay', 'travis', 'buildbot']
+                                   if k in repo_cfg)
         repo_cfgs[repo_label] = repo_cfg
 
     # b) load conf from db
     for repo_cfg in db_fetch_dicts(db, 'SELECT * from repo'):
         repo_label = repo_cfg['label']
-        # keep builder settings structure in sync with those loaded from cfg
-        builder_kind = repo_cfg.pop('builder')
+        builder_kind = repo_cfg['builder']
         repo_cfg[builder_kind] = json.loads(repo_cfg.pop('builder_settings'))
         # convert github/branches/reviewers from json:
         for key in ['github', 'branches', 'reviewers']:
