@@ -642,39 +642,28 @@ def check_admin_requirements(json=False):
 def admin_add_repo():
     logger = g.logger.getChild('admin')
     response.content_type = 'text/plain'
-    info = request.json
+    repo_cfg = dict(request.json)
     lazy_debug(logger, lambda: 'Request for {}; payload:{}'.format(request.path,
-                                                                   info))
-    # extract required params
-    # TODO: just save info as repo_cfg
-    try:
-        owner = info['owner']
-        name = info['name']
-        reviewers = info['reviewers']
-        github = info['github']
-        builder = info['builder']
-        builder_settings = info[builder]
-    except KeyError as e:
-        abort(422, 'Required parameter `{}` not found'.format(e.args[0]))
-    repo_label = '{}/{}'.format(info['owner'], info['name'])
-    # TODO: may want to update some fields in the future
+                                                                   repo_cfg))
+    for key in ['owner', 'name', 'reviewers', 'github', 'builder']:
+        if key not in repo_cfg:
+            abort(422, 'Required parameter `{}` not found'.format(key))
+    builder = repo_cfg['builder']
+    if builder not in repo_cfg:
+        abort(422, 'No settings specified for `{}` builder'.format(builder))
+    repo_label = '{}/{}'.format(repo_cfg['owner'], repo_cfg['name'])
     if repo_label in g.repo_cfgs:
         response.status = 200
         return g.repo_cfgs[repo_label]
-    branch = info.get('branch')
-    repo_cfg = {
-        'label': repo_label,
-        'owner': owner,
-        'name': name,
-        'reviewers': reviewers,
-        'github': github,
-        'builder': builder
-    }
-    if branch:
-        repo_cfg['branch'] = branch
+    repo_cfg['label'] = repo_label
+    # Local bindings for useful names
+    github = repo_cfg['github']
+    builder_settings = repo_cfg[builder]
+    # Always build master/develop/auto
+    builder_settings['build_branches'] = builder_settings.get('build_branches',
+                                                              []) + DEFAULT_BRANCHES
     repo_cfg[builder] = builder_settings
-    # TODO: validate keys?
-    # Especially for nested dicts; we want to have quay namespace for repo
+    # TODO: validate builder_settings? With hook? oO
     try:
         repo = g.gh.repository(repo_cfg['owner'], repo_cfg['name'])
     except github3.models.GitHubError as e:
@@ -684,11 +673,8 @@ def admin_add_repo():
     g.repos[repo_label] = repo
     g.states[repo_label] = {}
     g.repo_labels[repo.owner.login, repo.name] = repo_label
-    # save branch info
-    # Always build master/develop/auto
-    builder_settings['build_branches'] = builder_settings.get('build_branches',
-                                                              []) + DEFAULT_BRANCHES
-    gh_secret = github.get('secret', utils.random_string())
+    # ensure we have secret stored
+    github['secret'] = gh_secret = github.get('secret', utils.random_string())
     gh_webhook = g.make_webhook_url('github')
     lazy_debug(logger, lambda: 'Going to register github webhook: {}'.format(
         gh_webhook))
@@ -703,9 +689,7 @@ def admin_add_repo():
         abort(e.code, e.msg)
     # Save hook id so we can remove it later
     github['webhook_id'] = h.id
-    # ensure we have secret stored
-    github['secret'] = gh_secret
-    # Register in quay
+    # Register in builder
     try:
         register_in_buider(repo_label)
         lazy_debug(logger, lambda: 'Registered {} in builder {}: {}'.format(
@@ -726,9 +710,9 @@ def admin_add_repo():
                                             reviewers, github, branch,
                                             builder, builder_settings
                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                 [repo_label, owner, name,
-                  json.dumps(reviewers), json.dumps(github),
-                  json.dumps(branch) if branch else None,
+                 [repo_label, repo_cfg['owner'], repo_cfg['name'],
+                  json.dumps(repo_cfg['reviewers']), json.dumps(github),
+                  json.dumps(repo_cfg['branch']) if 'branch' in repo_cfg else None,
                   builder, json.dumps(builder_settings)])
     except sqlite3.Error:
         unregister_and_forget(repo_label)
