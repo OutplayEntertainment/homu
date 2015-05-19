@@ -22,16 +22,22 @@ class G: pass
 g = G()
 
 # Dict with routines for auto register/unregister in builder.
-# builder_type => (reg_func, unreg_func)
+# builder_type => {'register': reg_func,
+#                  'unregister': unreg_func,
+#                  <hook_type>:event_hook}
 # reg func should modify settings in-place, to allow unregistration at any point
 AUTO_BUILDERS = {
-    'quay': (quay1.register, quay1.unregister)
+    'quay': {
+        'register': quay1.register,
+        'unregister': quay1.unregister,
+        'push': quay1.push_hook
+    }
 }
 
 def register_in_buider(repo_label):
     builder_kind = g.repo_cfgs[repo_label]['builder']
-    if builder_kind in AUTO_BUILDERS:
-        (reg_func, _) = AUTO_BUILDERS[builder_kind]
+    reg_func = AUTO_BUILDERS.get(builder_kind, {}).get('register')
+    if reg_func:
         repo = g.repos[repo_label]
         settings = g.repo_cfgs[repo_label][builder_kind]
         reg_func(g, repo, settings)
@@ -41,14 +47,21 @@ def register_in_buider(repo_label):
 
 def unregister_in_buider(repo_label):
     builder_kind = g.repo_cfgs[repo_label]['builder']
-    if builder_kind in AUTO_BUILDERS:
-        (_, unreg_func) = AUTO_BUILDERS[builder_kind]
+    unreg_func = AUTO_BUILDERS.get(builder_kind, {}).get('unregister')
+    if unreg_func:
         repo = g.repos[repo_label]
         settings = g.repo_cfgs[repo_label][builder_kind]
         unreg_func(g, repo, settings)
     else:
         g.logger.warning('Cannot register repo {} in {} automatically'.format(
             repo_label, builder_kind))
+
+def builder_event_hook(repo_label, event_type, event):
+    builder_kind = g.repo_cfgs[repo_label]['builder']
+    hook = AUTO_BUILDERS.get(builder_kind, {}).get(event_type)
+    if hook:
+        settings = g.repo_cfgs[repo_label][builder_kind]
+        hook(g, event, settings)
 
 # We ignore any errors here, and just log them
 # This way we will be able, for example, to delete hooks manually
@@ -365,39 +378,6 @@ def github():
 
             if state.head_sha == info['before']:
                 state.head_advanced(info['after'])
-        # TODO: make it nicer, w/o ifs
-        if 'quay' in repo_cfg:
-            if ref in repo_cfg['quay']['build_branches']:
-                # create push event
-                # quay wants some fields in push event like avatar_url of author
-                # and we have to request them :(
-                author = g.gh.user(info['head_commit']['author']['username'])
-                committer = g.gh.user(info['head_commit']['committer']['username'])
-                quay_push_event = {
-                    'commit': info['head_commit']['id'][:7],
-                    'commit_info': {
-                        'author': {
-                            'username': author.login,
-                            'url': author.html_url,
-                            'avatar_url': author.avatar_url
-                        },
-                        'committer': {
-                            'username': committer.login,
-                            'url': committer.html_url,
-                            'avatar_url': committer.avatar_url
-                        },
-                        'date': info['head_commit']['timestamp'],
-                        'message': info['head_commit']['message'],
-                        'url': info['head_commit']['url']
-                    },
-                    'default_branch': info['repository']['default_branch'],
-                    'ref': info['ref']
-                }
-                lazy_debug(logger, lambda: 'Sending event to quay: {}'.format(
-                    quay_push_event))
-                r = requests.post(repo_cfg['quay']['webhook'], json=quay_push_event)
-                lazy_debug(logger, lambda: 'Quay response: {}/{}'.format(
-                    r.status_code, r.text))
 
     elif event_type == 'issue_comment':
         body = info['comment']['body']
@@ -420,6 +400,8 @@ def github():
                 realtime=True,
             ):
                 g.queue_handler()
+    # run custom buider hook
+    builder_event_hook(repo_label, event_type, info)
 
     return 'OK'
 

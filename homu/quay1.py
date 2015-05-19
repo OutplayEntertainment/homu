@@ -163,3 +163,37 @@ def unregister(g, repo, settings):
     lazy_debug(logger, lambda: 'Going to delete repo from quay: {}'.format(
         settings))
     ignore(lambda: utils.maybe_call(settings, 'name', q.delete_repo))
+
+def push_hook(g, push_event, settings):
+    ref = push_event['ref'][len('refs/heads/'):]
+    if ref in settings['build_branches']:
+        # create push event
+        # quay wants some fields in push event like avatar_url of author
+        # and we have to request them :(
+        author = g.gh.user(push_event['head_commit']['author']['username'])
+        committer = g.gh.user(push_event['head_commit']['committer']['username'])
+        quay_push_event = {
+            'commit': push_event['head_commit']['id'][:7],
+            'commit_push_event': {
+                'author': {
+                    'username': author.login,
+                    'url': author.html_url,
+                    'avatar_url': author.avatar_url
+                },
+                'committer': {
+                    'username': committer.login,
+                    'url': committer.html_url,
+                    'avatar_url': committer.avatar_url
+                },
+                'date': push_event['head_commit']['timestamp'],
+                'message': push_event['head_commit']['message'],
+                'url': push_event['head_commit']['url']
+            },
+            'default_branch': push_event['repository']['default_branch'],
+            'ref': push_event['ref']
+        }
+        lazy_debug(g.logger, lambda: 'Sending event to quay: {}'.format(
+            quay_push_event))
+        r = requests.post(settings['webhook'], json=quay_push_event)
+        lazy_debug(g.logger, lambda: 'Quay response: {}/{}'.format(
+            r.status_code, r.text))
