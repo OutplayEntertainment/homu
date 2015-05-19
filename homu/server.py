@@ -635,9 +635,6 @@ def check_admin_requirements(json=False):
         return wrapper
     return decorator
 
-# TODO: move and rename
-# TODO: Create context manager
-
 
 
 @put('/admin/repo')
