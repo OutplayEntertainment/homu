@@ -118,7 +118,7 @@ class Quay:
         r.raise_for_status()
         return r.json()['uuid']
 
-
+# TODO: classmethods?
 def register(g, repo, settings):
     logger = g.logger
     q = Quay(g.cfg['quay'])

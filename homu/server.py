@@ -766,7 +766,7 @@ def admin_delete_repo(repo_label):
         # TODO: maybe cancel build and all that?
         unregister_and_forget(repo_label)
         db_query(g.db, 'DELETE from repo where label = ?', [repo_label])
-        lazy_debug(logger, lambda: 'Repo deleted and unregistered: {}'.format(
+        lazy_debug(g.logger, lambda: 'Repo deleted and unregistered: {}'.format(
             repo_label))
         return repo_label
     else:
