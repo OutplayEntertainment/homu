@@ -84,7 +84,6 @@ class Quay:
             create_url = self.url('customtrigger/setup', namespace, repo)
             resp = sess.get(create_url, headers=self.auth_header)
             resp.raise_for_status()
-            # TODO: handle errors and re-raise?
             trigger_uuid = utils.get_query(resp.url)['newtrigger'][0]
             csrf_token = CSRF_TOKEN_RE.search(resp.text).groups()[0]
             activate_url = self.api_url('repository', namespace, repo,
@@ -93,8 +92,6 @@ class Quay:
             config = {'build_source': git_url, 'subdir':'/'}
             resp = sess.post(activate_url,
                              json={'config': config})
-            # TODO: remove trigger if not activated?
-            # DELETE https://quay.io/api/v1/repository/lhtest/apitest/trigger/b48bf16e-2559-4e4e-810c-826417cec9ee?_csrf_token=xzQ7yMOL6MEvL8Cv0%2FJtCignQnAwCNvl7P0Po5NOgYhRjFgnBgyeb0O6j3QBTVy%2F
             resp.raise_for_status()
             trigger = resp.json()
         result = {
