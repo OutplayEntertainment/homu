@@ -691,6 +691,7 @@ def admin_add_repo():
     github['webhook_id'] = h.id
     # Register in builder
     try:
+        # TODO: register for existing repo?
         register_in_buider(repo_label)
         lazy_debug(logger, lambda: 'Registered {} in builder {}: {}'.format(
             repo_label, repo_cfg['builder'], builder_settings))
@@ -724,6 +725,7 @@ def admin_add_repo():
 @delete('/admin/repo/<repo_label:path>')
 @check_admin_requirements()
 def admin_delete_repo(repo_label):
+    # TODO: unregister without removing a repo?
     response.content_type = 'text/plain'
     if repo_label in g.repo_cfgs:
         # TODO: maybe cancel build and all that?
