@@ -113,6 +113,19 @@ def join_paths(*paths):
     # with different separator. So explicitly call posixpath.join
     return posixpath.join(*paths)
 
+def join_url(base_url, *paths):
+    path = join_paths(*paths)
+    if path.startswith('/'):
+        path = path[1:]
+    if not base_url.endswith('/'):
+        base_url = base_url + '/'
+    return urllib.parse.urljoin(base_url, path)
+
+def add_url_params(url, **query_params):
+    query = urllib.parse.urlencode(query_params)
+    (scheme, host, path, _, _) = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((scheme, host, path, query, ''))
+
 def get_query(url):
     return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
 

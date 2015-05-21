@@ -149,7 +149,9 @@ $ curl -XPUT -H"Authorization: {ADMUSER} {ADMTOKEN}" -H"Content-type: applicatio
 This command will add repo to homu, store it to db for persistence, create hook on github, create repo
 on Quay.io, and register all necessary hooks there. One can add repos using other builders, but autoregistration is not supported for them.
 
-To delete repo and unregister it send DELETE request to `admind/repo/{repo_label}`. *WARNING*: this will remove repo in Quay.io:
+If you want to register existing quay repo in homu, add `"existing_repo"` key to `"quay"` settings and set it to name of your quay repo.
+
+To delete repo and unregister it send DELETE request to `admind/repo/{repo_label}`. To keep quay repo undeleted after unregistering, pass `?keep_repo=True`.
 
 ```sh
 $ curl -XDELETE -H"Authorization: {ADMUSER} {ADMTOKEN}" "http://{homu_ip}:{homu_port}/admin/repo/{repo_label}"

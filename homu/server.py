@@ -69,9 +69,10 @@ def builder_event_hook(repo_label, event_type, event):
 def unregister_in_github(repo_label):
     repo = g.repos[repo_label]
     settings = g.repo_cfgs[repo_label]['github']
-    hook = utils.maybe_call(settings, 'webhook_id', repo.hook)
-    if hook:
-        utils.ignore(lambda: hook.delete(), logger=g.logger)
+    utils.ignore(lambda:
+                 utils.maybe_call(settings, 'webhook_id',
+                                  lambda hid:repo.hook(hid).delete()),
+                 logger=g.logger)
 
 def forget_repo(repo_label):
     repo = g.repos[repo_label]
@@ -635,8 +636,6 @@ def check_admin_requirements(json=False):
         return wrapper
     return decorator
 
-
-
 @put('/admin/repo')
 @check_admin_requirements(json=True)
 def admin_add_repo():
@@ -725,13 +724,16 @@ def admin_add_repo():
 @delete('/admin/repo/<repo_label:path>')
 @check_admin_requirements()
 def admin_delete_repo(repo_label):
-    # TODO: unregister without removing a repo?
     response.content_type = 'text/plain'
     if repo_label in g.repo_cfgs:
+        # XXX: do not like it much
+        if 'keep_repo' in request.query:
+            builder_kind = g.repo_cfgs[repo_label]['builder']
+            g.repo_cfgs[repo_label][builder_kind]['keep_repo'] = True
         # TODO: maybe cancel build and all that?
         unregister_and_forget(repo_label)
         db_query(g.db, 'DELETE from repo where label = ?', [repo_label])
-        lazy_debug(g.logger, lambda: 'Repo deleted and unregistered: {}'.format(
+        lazy_debug(g.logger, lambda: 'Repo unregistered: {}'.format(
             repo_label))
         return repo_label
     else:
