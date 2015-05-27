@@ -19,10 +19,10 @@ EVENT_BUILD_FAILURE = 'build_failure'
 # import http.client as http_client
 # http_client.HTTPConnection.debuglevel = 1
 
-class QuayThing:
+class QuayResource:
     def __init__(self, access_token, username, password,
                  address=QUAY_HOSTNAME, api_prefix=QUAY_API, scheme=QUAY_SCHEME,
-                 parent_url=None, thing_path=[]):
+                 parent_url=None, resource_path=[]):
         self.auth_credentials = {'username': username, 'password':password}
         # Quay.io has it own sense of http basic auth, so we can't use
         # requests `auth` param. We need to send access_token *as is*,
@@ -34,7 +34,7 @@ class QuayThing:
         self.access_token = access_token
         self.api_prefix = api_prefix
         self.address = address
-        self._set_thing_api_url(parent_url, *thing_path)
+        self._set_resource_api_url(parent_url, *resource_path)
         self.basic_params = dict(access_token=access_token,
                                  username=username,
                                  password=password,
@@ -61,16 +61,16 @@ class QuayThing:
         return utils.merge_dicts(self.inherited, self.details)
 
     def delete(self):
-        if self.thing_url is not None:
-            r = requests.delete(self.thing_url,
+        if self.resource_url is not None:
+            r = requests.delete(self.resource_url,
                                 headers=self.auth_header)
             r.raise_for_status()
         else:
             raise TypeError('Object does not support deletion')
 
     def refresh(self):
-        if self.thing_url is not None and hasattr(self, 'update_details'):
-            r = requests.get(self.thing_url, headers=self.auth_header)
+        if self.resource_url is not None and hasattr(self, 'update_details'):
+            r = requests.get(self.resource_url, headers=self.auth_header)
             r.raise_for_status()
             self.update_details(r.json())
         else:
@@ -80,7 +80,7 @@ class QuayThing:
         params = utils.merge_dicts(self.basic_params,
                                    self.inherited,
                                    kwargs,
-                                   parent_url=self.thing_url)
+                                   parent_url=self.resource_url)
         return kls(*args, **params)
 
     def _make_url(self, *paths, query=None):
@@ -91,23 +91,24 @@ class QuayThing:
         paths = (self.api_prefix, ) + paths
         return self._make_url(*paths, query=query)
     def _child_api_url(self, *paths, **query_params):
-        if self.thing_url is not None:
-            return utils.add_url_params(utils.join_url(self.thing_url, *paths),
+        if self.resource_url is not None:
+            return utils.add_url_params(utils.join_url(self.resource_url,
+                                                       *paths),
                                         **query_params)
         else:
-            raise TypeError('Thing can not have child entities')
-    def _set_thing_api_url(self, parent_url=None, *paths):
+            raise TypeError('Resource can not have child entities')
+    def _set_resource_api_url(self, parent_url=None, *paths):
         if parent_url:
-            self.thing_url = utils.join_url(parent_url, *paths)
+            self.resource_url = utils.join_url(parent_url, *paths)
         else:
-            self.thing_url = None
+            self.resource_url = None
 
-class NamespacedThing(QuayThing):
+class NamespacedResource(QuayResource):
     def __init__(self, namespace=None, **kwargs):
         super().__init__(**kwargs)
         self.inherited['namespace'] = namespace
 
-class Namespace(NamespacedThing):
+class Namespace(NamespacedResource):
     # TODO: save private?
     def create_repo(self, name, private=True):
         r = requests.post(self._api_url('repository'),
@@ -123,12 +124,12 @@ class Namespace(NamespacedThing):
     def repo(self, name):
         return self._create_child(Repo, name)
 
-class Repo(NamespacedThing):
+class Repo(NamespacedResource):
     def __init__(self, name, **kwargs):
         super().__init__(**kwargs)
         self.details['name'] = name
         self.details['url'] = self._make_url('repository', self.namespace, name)
-        self._set_thing_api_url(self._api_url(),
+        self._set_resource_api_url(self._api_url(),
                                 'repository', self.namespace, name)
 
     @contextmanager
@@ -182,24 +183,24 @@ class Repo(NamespacedThing):
     def web_hook(self, uuid):
         return self._create_child(Hook, uuid)
 
-class BuildTrigger(NamespacedThing):
+class BuildTrigger(NamespacedResource):
     def __init__(self, uuid, ssh=None, webhook=None, **kwargs):
-        super().__init__(thing_path=['trigger', uuid],
+        super().__init__(resource_path=['trigger', uuid],
                                              **kwargs)
         self.details['uuid'] = uuid
         self.details['ssh'] = ssh
         self.details['webhook'] = webhook
 
-    def update_details(self, thing_json):
+    def update_details(self, resource_json):
         interesting_keys = ['ssh', 'webhook']
-        for cred in thing_json['config']['credentials']:
+        for cred in resource_json['config']['credentials']:
             for key in interesting_keys:
                 if key in cred['name'].lower():
                     self.details[key] = cred['value']
 
-class Hook(NamespacedThing):
+class Hook(NamespacedResource):
     def __init__(self, uuid, **kwargs):
-        super().__init__(thing_path=['notification', uuid],
+        super().__init__(resource_path=['notification', uuid],
                                              **kwargs)
         self.details['uuid'] = uuid
 
