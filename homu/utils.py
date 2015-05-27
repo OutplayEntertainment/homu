@@ -5,6 +5,8 @@ import logging
 import binascii
 import posixpath
 
+from itertools import chain
+
 import github3
 
 def github_set_ref(repo, ref, sha, *, force=False, auto_create=True):
@@ -70,11 +72,14 @@ def update_in(dkt, key, func):
         dkt[key] = func(dkt[key])
     return dkt
 
-def merge_dicts(fst, snd=None, **kwargs):
-    snd = snd or kwargs
-    res = dict(fst)
-    res.update(snd)
-    return res
+# Merges dicts and kwargs passed:
+# d1 = {'x': 1}
+# d2 = {'y': 2}
+# merge_dicts(d1, d2, k1=3, k2=4)
+# {'x': 1, 'y': 2, 'k1': 3, 'k2': 4}
+def merge_dicts(*args, **kwargs):
+    return dict(chain(chain(*(d.items() for d in args)),
+                      kwargs.items()))
 
 def random_string(n=20):
     return binascii.b2a_hex(os.urandom(n)).decode()

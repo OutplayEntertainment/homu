@@ -743,7 +743,7 @@ def admin_delete_repo(repo_label):
 @check_admin_requirements()
 def admin_ger_repo(repo_label):
     if repo_label in g.repo_cfgs:
-        return utils.merge_dicts(g.repo_cfgs[repo_label], {'label': repo_label})
+        return utils.merge_dicts(g.repo_cfgs[repo_label], label=repo_label)
     else:
         abort(404, repo_label)
 

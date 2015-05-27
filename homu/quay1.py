@@ -78,9 +78,9 @@ class QuayThing:
 
     def _create_child(self, kls, *args, **kwargs):
         params = utils.merge_dicts(self.basic_params,
-                                   self.inherited)
-        params = utils.merge_dicts(params, parent_url=self.thing_url)
-        params = utils.merge_dicts(params, kwargs)
+                                   self.inherited,
+                                   kwargs,
+                                   parent_url=self.thing_url)
         return kls(*args, **params)
 
     def _make_url(self, *paths, query=None):
