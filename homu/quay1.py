@@ -125,7 +125,7 @@ class Namespace(NamespacedThing):
 
 class Repo(NamespacedThing):
     def __init__(self, name, **kwargs):
-        super(self.__class__, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.details['name'] = name
         self.details['url'] = self._make_url('repository', self.namespace, name)
         self._set_thing_api_url(self._api_url(),
@@ -184,7 +184,7 @@ class Repo(NamespacedThing):
 
 class BuildTrigger(NamespacedThing):
     def __init__(self, uuid, ssh=None, webhook=None, **kwargs):
-        super(self.__class__, self).__init__(thing_path=['trigger', uuid],
+        super().__init__(thing_path=['trigger', uuid],
                                              **kwargs)
         self.details['uuid'] = uuid
         self.details['ssh'] = ssh
@@ -199,7 +199,7 @@ class BuildTrigger(NamespacedThing):
 
 class Hook(NamespacedThing):
     def __init__(self, uuid, **kwargs):
-        super(self.__class__, self).__init__(thing_path=['notification', uuid],
+        super().__init__(thing_path=['notification', uuid],
                                              **kwargs)
         self.details['uuid'] = uuid
 
