@@ -133,9 +133,3 @@ def add_url_params(url, **query_params):
 
 def get_query(url):
     return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
-
-def webhook_url(cfg, path, username=None, password=None):
-    return make_url(**merge_dicts(cfg['external'],
-                                  path=path,
-                                  username=username,
-                                  password=password))
