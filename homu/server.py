@@ -3,23 +3,93 @@ import json
 import urllib.parse
 from .main import PullReqState, parse_commands, db_query, INTERRUPTED_BY_HOMU_RE
 from . import utils
+from . import quay1
 from .utils import lazy_debug
 import github3
+import sqlite3
 import jinja2
 import requests
 import pkg_resources
-from bottle import get, post, run, request, redirect, abort, response
+from bottle import get, post, put, delete, run, request, redirect, abort, response
 import hashlib
+import functools
 
 import bottle; bottle.BaseRequest.MEMFILE_MAX = 1024 * 1024 * 10
+
+DEFAULT_BRANCHES = ['master', 'develop', 'auto']
 
 class G: pass
 g = G()
 
+# Dict with routines for auto register/unregister in builder.
+# builder_type => {'register': reg_func,
+#                  'unregister': unreg_func,
+#                  <hook_type>:event_hook}
+# reg func should modify settings in-place, to allow unregistration at any point
+AUTO_BUILDERS = {
+    'quay': {
+        'register': quay1.register,
+        'unregister': quay1.unregister,
+        'push': quay1.push_hook
+    }
+}
+
+def register_in_buider(repo_label):
+    builder_kind = g.repo_cfgs[repo_label]['builder']
+    reg_func = AUTO_BUILDERS.get(builder_kind, {}).get('register')
+    if reg_func:
+        repo = g.repos[repo_label]
+        settings = g.repo_cfgs[repo_label][builder_kind]
+        reg_func(g, repo, settings)
+    else:
+        g.logger.warning('Cannot register repo {} in {} automatically'.format(
+            repo_label, builder_kind))
+
+def unregister_in_buider(repo_label):
+    builder_kind = g.repo_cfgs[repo_label]['builder']
+    unreg_func = AUTO_BUILDERS.get(builder_kind, {}).get('unregister')
+    if unreg_func:
+        repo = g.repos[repo_label]
+        settings = g.repo_cfgs[repo_label][builder_kind]
+        unreg_func(g, repo, settings)
+    else:
+        g.logger.warning('Cannot register repo {} in {} automatically'.format(
+            repo_label, builder_kind))
+
+def builder_event_hook(repo_label, event_type, event):
+    builder_kind = g.repo_cfgs[repo_label]['builder']
+    hook = AUTO_BUILDERS.get(builder_kind, {}).get(event_type)
+    if hook:
+        settings = g.repo_cfgs[repo_label][builder_kind]
+        hook(g, event, settings)
+
+# We ignore any errors here, and just log them
+# This way we will be able, for example, to delete hooks manually
+# from github and then unregister repo here
+def unregister_in_github(repo_label):
+    repo = g.repos[repo_label]
+    settings = g.repo_cfgs[repo_label]['github']
+    utils.ignore(lambda:
+                 utils.maybe_call(settings, 'webhook_id',
+                                  lambda hid:repo.hook(hid).delete()),
+                 logger=g.logger)
+
+def forget_repo(repo_label):
+    repo = g.repos[repo_label]
+    del g.repo_cfgs[repo_label]
+    del g.states[repo_label]
+    del g.repo_labels[repo.owner.login, repo.name]
+    del g.repos[repo_label]
+
+def unregister_and_forget(repo_label):
+    unregister_in_github(repo_label)
+    unregister_in_buider(repo_label)
+    forget_repo(repo_label)
+
 def find_state(sha):
     for repo_label, repo_states in g.states.items():
         for state in repo_states.values():
-            if state.merge_sha == sha:
+            if state.merge_sha.startswith(sha):
                 return state, repo_label
 
     raise ValueError('Invalid SHA')
@@ -154,6 +224,44 @@ def rollup():
     else:
         redirect(pull.html_url)
 
+@post('/quay')
+def quay():
+    logger = g.logger.getChild('quay')
+    response.content_type = 'text/plain'
+    info = request.json
+    lazy_debug(logger, lambda: 'info: {}'.format(utils.remove_url_keys_from_json(info)))
+
+    trigger_metadata = info['trigger_metadata']
+    commit_sha = trigger_metadata.get('commit_sha',
+                                      trigger_metadata.get('commit'))
+    try:
+        state, repo_label = find_state(commit_sha)
+    except ValueError:
+        lazy_debug(logger,
+                   lambda: 'Invalid commit ID from Quay: {}'.format(commit_sha))
+        return 'OK'
+
+    if 'quay' not in state.build_res:
+        lazy_debug(logger,
+                   lambda: 'quay is not a monitored target for {}'.format(state))
+        return 'OK'
+
+    secret = g.repo_cfgs[repo_label]['quay']['secret']
+    username = g.repo_cfgs[repo_label]['quay']['username']
+    auth_header = request.headers['Authorization']
+    code = requests.auth._basic_auth_str(username, secret)
+    if auth_header != code:
+        logger.warn('authorization failed for {}; header = {}, computed = {}'
+                    .format(state, auth_header, code))
+        abort(401, 'Authorization failed')
+
+    error_message = info.get('error_message')
+    succ = error_message is None
+
+    report_build_res(succ, info['homepage'], 'quay', repo_label,
+                     state, logger, error_message)
+    return 'OK'
+
 @post('/github')
 def github():
     logger = g.logger.getChild('github')
@@ -167,8 +275,12 @@ def github():
 
     owner_info = info['repository']['owner']
     owner = owner_info.get('login') or owner_info['name']
-    repo_label = g.repo_labels[owner, info['repository']['name']]
-    repo_cfg = g.repo_cfgs[repo_label]
+    try:
+        repo_label = g.repo_labels[owner, info['repository']['name']]
+        repo_cfg = g.repo_cfgs[repo_label]
+    except KeyError:
+        abort(404, 'Not found repo {}/{}'.format(owner,
+                                                 info['repository']['name']))
 
     hmac_method, hmac_sig = request.headers['X-Hub-Signature'].split('=')
     if hmac_sig != hmac.new(
@@ -289,10 +401,12 @@ def github():
                 realtime=True,
             ):
                 g.queue_handler()
+    # run custom buider hook
+    builder_event_hook(repo_label, event_type, info)
 
     return 'OK'
 
-def report_build_res(succ, url, builder, repo_label, state, logger):
+def report_build_res(succ, url, builder, repo_label, state, logger, info=None):
     lazy_debug(logger,
                lambda: 'build result {}: builder = {}, succ = {}, current build_res = {}'
                             .format(state, builder, succ, state.build_res_summary()))
@@ -326,9 +440,16 @@ def report_build_res(succ, url, builder, repo_label, state, logger):
         if state.status == 'pending':
             state.set_status('failure')
             desc = 'Test failed'
-            utils.github_create_status(state.repo, state.head_sha, 'failure', url, desc, context='homu')
+            if info:
+                full_desc = '{}: \n```{}```'.format(desc, info)
+            else:
+                full_desc = desc
+            utils.github_create_status(state.repo, state.head_sha, 'failure',
+                                       url, desc, context='homu')
 
-            state.add_comment(':broken_heart: {} - [{}]({})'.format(desc, builder, url))
+            state.add_comment(':broken_heart: {} - [{}]({})'.format(full_desc,
+                                                                    builder,
+                                                                    url))
 
     g.queue_handler()
 
@@ -458,7 +579,9 @@ def travis():
     lazy_debug(logger, lambda: 'state: {}, {}'.format(state, state.build_res_summary()))
 
     if 'travis' not in state.build_res:
-        lazy_debug(logger, lambda: 'travis is not a monitored target for %s', state)
+        lazy_debug(logger,
+                   lambda: 'travis is not a monitored target for {}'.format(
+                       state))
         return 'OK'
 
     token = g.repo_cfgs[repo_label]['travis']['token']
@@ -480,15 +603,166 @@ def travis():
 
     return 'OK'
 
-def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots, my_username, db, repo_labels, mergeable_que):
+# Admin methods are protected via Basic auth. To access them one may use curl:
+# `curl -H"Authorization: <username> <secret>" "url"`.
+# For better security one may setup nginx in front of this service and listen
+# for /admin/* requestr only from certain ip (to prevent accessing this API from
+# public network, for example)
+def check_admin_requirements(json=False):
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            logger = g.logger.getChild('admin')
+            lazy_debug(logger, lambda: 'Got `{}` request for: {}'.format(
+                request.method, request.path))
+            auth_header = request.headers.get('Authorization')
+            if not auth_header:
+                logger.warning('Request for {} without Authorization header'.format(
+                    request.path))
+                return abort(401, 'Authorization required')
+            check_header = '{} {}'.format(g.cfg['admin']['username'],
+                                          g.cfg['admin']['secret'])
+            if auth_header != check_header:
+                logger.warning('authorization failed: have {}, want = {}'.format(
+                    auth_header, check_header))
+                return abort(401, 'Authorization failed')
+            if json:
+                try:
+                    if request.json is None:
+                        return abort(415, 'Content-type is not accepted')
+                except ValueError:
+                    return abort(400, 'Malformed json')
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@put('/admin/repo')
+@check_admin_requirements(json=True)
+def admin_add_repo():
+    logger = g.logger.getChild('admin')
+    response.content_type = 'text/plain'
+    repo_cfg = dict(request.json)
+    lazy_debug(logger, lambda: 'Request for {}; payload:{}'.format(request.path,
+                                                                   repo_cfg))
+    for key in ['owner', 'name', 'reviewers', 'github', 'builder']:
+        if key not in repo_cfg:
+            abort(422, 'Required parameter `{}` not found'.format(key))
+    builder = repo_cfg['builder']
+    if builder not in repo_cfg:
+        abort(422, 'No settings specified for `{}` builder'.format(builder))
+    repo_label = '{}/{}'.format(repo_cfg['owner'], repo_cfg['name'])
+    if repo_label in g.repo_cfgs:
+        response.status = 200
+        return g.repo_cfgs[repo_label]
+    repo_cfg['label'] = repo_label
+    # Local bindings for useful names
+    github = repo_cfg['github']
+    builder_settings = repo_cfg[builder]
+    # Always build master/develop/auto
+    builder_settings['build_branches'] = builder_settings.get('build_branches',
+                                                              []) + DEFAULT_BRANCHES
+    repo_cfg[builder] = builder_settings
+    # TODO: validate builder_settings? With hook? oO
+    try:
+        repo = g.gh.repository(repo_cfg['owner'], repo_cfg['name'])
+    except github3.models.GitHubError as e:
+        abort(e.code, e.msg)
+    # register new configuration early, so we can accept `ping` webhook from gh
+    g.repo_cfgs[repo_label] = repo_cfg
+    g.repos[repo_label] = repo
+    g.states[repo_label] = {}
+    g.repo_labels[repo.owner.login, repo.name] = repo_label
+    # ensure we have secret stored
+    github['secret'] = gh_secret = github.get('secret', utils.random_string())
+    gh_webhook = g.make_webhook_url('github')
+    lazy_debug(logger, lambda: 'Going to register github webhook: {}'.format(
+        gh_webhook))
+    try:
+        h = repo.create_hook('web', {'url': gh_webhook, 'secret': gh_secret,
+                                     'content_type': 'json', 'insecure_ssl': 0},
+                             ['push', 'pull_request',
+                              'issue_comment', 'pull_request_review_comment'],
+                             True)
+    except github3.models.GitHubError as e:
+        forget_repo(repo_label)
+        abort(e.code, e.msg)
+    # Save hook id so we can remove it later
+    github['webhook_id'] = h.id
+    # Register in builder
+    try:
+        # TODO: register for existing repo?
+        register_in_buider(repo_label)
+        lazy_debug(logger, lambda: 'Registered {} in builder {}: {}'.format(
+            repo_label, repo_cfg['builder'], builder_settings))
+    except Exception as e:
+        unregister_and_forget(repo_label)
+        # We want to return appropriate response codes when we can,
+        # so we will catch github/requests errors
+        try:
+            raise e
+        except requests.RequestException as e:
+            abort(e.response.status_code, e.response.text)
+        except github3.GitHubError as e:
+            abort(e.code, e.msg)
+    try:
+        # save configuration to db
+        db_query(g.db, '''INSERT INTO repo (label, owner, name,
+                                            reviewers, github, branch,
+                                            builder, builder_settings
+                                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                 [repo_label, repo_cfg['owner'], repo_cfg['name'],
+                  json.dumps(repo_cfg['reviewers']), json.dumps(github),
+                  json.dumps(repo_cfg['branch']) if 'branch' in repo_cfg else None,
+                  builder, json.dumps(builder_settings)])
+    except sqlite3.Error:
+        unregister_and_forget(repo_label)
+        raise
+    # TODO: probably we want to fetch pull requests?
+    response.status = 201
+    return repo_cfg
+
+@delete('/admin/repo/<repo_label:path>')
+@check_admin_requirements()
+def admin_delete_repo(repo_label):
+    response.content_type = 'text/plain'
+    if repo_label in g.repo_cfgs:
+        # XXX: do not like it much
+        if 'keep_repo' in request.query:
+            builder_kind = g.repo_cfgs[repo_label]['builder']
+            g.repo_cfgs[repo_label][builder_kind]['keep_repo'] = True
+        # TODO: maybe cancel build and all that?
+        unregister_and_forget(repo_label)
+        db_query(g.db, 'DELETE from repo where label = ?', [repo_label])
+        lazy_debug(g.logger, lambda: 'Repo unregistered: {}'.format(
+            repo_label))
+        return repo_label
+    else:
+        abort(404, repo_label)
+
+@get('/admin/repo/<repo_label:path>')
+@check_admin_requirements()
+def admin_ger_repo(repo_label):
+    if repo_label in g.repo_cfgs:
+        return utils.merge_dicts(g.repo_cfgs[repo_label], label=repo_label)
+    else:
+        abort(404, repo_label)
+
+def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots,
+          my_username, db, repo_labels, mergeable_que, gh):
     env = jinja2.Environment(
-        loader = jinja2.FileSystemLoader(pkg_resources.resource_filename(__name__, 'html')),
-        autoescape = True,
+        loader=jinja2.FileSystemLoader(pkg_resources.resource_filename(__name__, 'html')),
+        autoescape=True,
     )
     tpls = {}
     tpls['index'] = env.get_template('index.html')
     tpls['queue'] = env.get_template('queue.html')
 
+    def make_webhook_url(path, username=None, password=None):
+        return utils.make_url(**utils.merge_dicts(g.cfg['external'],
+                                                  path=path,
+                                                  username=username,
+                                                  password=password))
+    # XXX: this smells
     g.cfg = cfg
     g.states = states
     g.queue_handler = queue_handler
@@ -499,7 +773,11 @@ def start(cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots, 
     g.tpls = tpls
     g.my_username = my_username
     g.db = db
+    g.gh = gh
+    g.make_webhook_url = make_webhook_url
     g.repo_labels = repo_labels
     g.mergeable_que = mergeable_que
 
-    run(host='', port=cfg['web']['port'], server='waitress')
+    run(host=cfg['web'].get('hostname', ''),
+        port=cfg['web']['port'],
+        server='waitress')

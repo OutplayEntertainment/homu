@@ -133,3 +133,29 @@ pip install -e homu
 
 homu
 ```
+
+### How to use admin interface
+
+Homu provides admin interface to add and auto-register repos in github and specified builder. Currently
+homu can only autoregister repo in Quay.io.
+
+To add repo to homu and register it within github & quay:
+
+```sh
+$ curl -XPUT -H"Authorization: {ADMUSER} {ADMTOKEN}" -H"Content-type: application/json" -d'{"owner": "{gh_owner}", "name": "{gh_repo}", "reviewers": ["{gh_reviewer}"], "github": {}, "builder": "quay", "quay": {"public": true}}' "http://{HOMU_IP}:{HOMU_PORT}/admin/repo"'
+{"quay": {"secret": "{secr}", "username": "{user}", "name": "{gh_repo}", "build_branches": ["master", "develop", "auto"], "ssh": {deploy_key_id}, "public": true, "url": "{quay_repo_url}", "webhooks": "{quay_webhook}"}, "owner": "{gh_owner}", "reviewers": ["{gh_reviewer}"], "builder": "quay", "name": "{gh_repo}", "github": {"secret": "{gh_secret}", "webhook_id": {gh_webhook_id}}, "label": "{repo_label}"}
+```
+
+This command will add repo to homu, store it to db for persistence, create hook on github, create repo
+on Quay.io, and register all necessary hooks there. One can add repos using other builders, but autoregistration is not supported for them.
+
+If you want to register existing quay repo in homu, add `"existing_repo"` key to `"quay"` settings and set it to name of your quay repo.
+
+To delete repo and unregister it send DELETE request to `admind/repo/{repo_label}`. To keep quay repo undeleted after unregistering, pass `?keep_repo=True`.
+
+```sh
+$ curl -XDELETE -H"Authorization: {ADMUSER} {ADMTOKEN}" "http://{homu_ip}:{homu_port}/admin/repo/{repo_label}"
+{repo_label}
+```
+
+For builders other than Quay.io auto unregistration is not supported.

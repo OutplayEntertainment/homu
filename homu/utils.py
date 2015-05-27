@@ -1,12 +1,20 @@
+import os
 import json
-import github3
+import urllib
 import logging
+import binascii
+import posixpath
+
+from itertools import chain
+
+import github3
 
 def github_set_ref(repo, ref, sha, *, force=False, auto_create=True):
     url = repo._build_url('git', 'refs', ref, base_url=repo._api)
     data = {'sha': sha, 'force': force}
 
-    try: js = repo._json(repo._patch(url, data=json.dumps(data)), 200)
+    try:
+        js = repo._json(repo._patch(url, data=json.dumps(data)), 200)
     except github3.models.GitHubError as e:
         if e.code == 422 and auto_create:
             return repo.create_ref('refs/' + ref, sha)
@@ -46,3 +54,82 @@ def remove_url_keys_from_json(json):
 def lazy_debug(logger, f):
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f())
+
+def maybe_call(dkt, key, func):
+    if key in dkt:
+        return func(dkt[key])
+
+# this thing could be a macros in the better world
+def ignore(func, error=Exception, logger=None):
+    try:
+        return func()
+    except error as e:
+        if logger:
+            logger.warning(e)
+
+def update_in(dkt, key, func):
+    if key in dkt:
+        dkt[key] = func(dkt[key])
+    return dkt
+
+# Merges dicts and kwargs passed:
+# d1 = {'x': 1}
+# d2 = {'y': 2}
+# merge_dicts(d1, d2, k1=3, k2=4)
+# {'x': 1, 'y': 2, 'k1': 3, 'k2': 4}
+def merge_dicts(*args, **kwargs):
+    return dict(chain(chain(*(d.items() for d in args)),
+                      kwargs.items()))
+
+def random_string(n=20):
+    return binascii.b2a_hex(os.urandom(n)).decode()
+
+# Make url from components:
+# make_url('http', '127.0.0.1', 12345, '/path') -> 'http://127.0.0.1:12345/path'
+# make_url('http', '127.0.0.1', '/path') -> 'http://127.0.0.1/path'
+# make_url('http', '127.0.0.1') -> 'http://127.0.0.1/'
+# make_url('http', '127.0.0.1:12345') -> 'http://127.0.0.1:12345/'
+# make_url('http', '127.0.0.1', 12345, '/path', {'var':'val'}) -> 'http://127.0.0.1:12345/path?var=val'
+# make_url('http', '127.0.0.1', query={'var':'val'}) -> 'http://127.0.0.1/?var=val'
+# etc.
+# NOTE: last *port* arg to catch cases like make_url(**conf)
+def make_url(scheme, hostname, port_or_path=None, path='/',
+             query=None, username=None, password=None, port=None):
+    if port_or_path and isinstance(port_or_path, int):
+        port = port_or_path
+    else:
+        port = port
+        path = port_or_path or path
+    address = '{}:{}'.format(hostname, port) if port else hostname
+    if username:
+        if password:
+            password = ':{}'.format(password)
+        else:
+            password = ''
+        netloc = '{}{}@{}'.format(urllib.parse.quote(username), password,
+                                  address)
+    else:
+        netloc = address
+    query = urllib.parse.urlencode(query) if query else ''
+    return urllib.parse.urlunsplit((scheme, netloc, path, query, ''))
+
+def join_paths(*paths):
+    # Can't use os.path.join, because *in theory* we can be on some platform
+    # with different separator. So explicitly call posixpath.join
+    return posixpath.join(*paths)
+
+def join_url(base_url, *paths):
+    path = join_paths(*paths)
+    if path.startswith('/'):
+        path = path[1:]
+    if not base_url.endswith('/'):
+        base_url = base_url + '/'
+    return urllib.parse.urljoin(base_url, path)
+
+def add_url_params(url, **query_params):
+    query = urllib.parse.urlencode(query_params)
+    (scheme, host, path, _, _) = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((scheme, host, path, query, ''))
+
+def get_query(url):
+    return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)

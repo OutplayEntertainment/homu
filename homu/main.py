@@ -44,6 +44,13 @@ def db_query(db, *args):
     with db_query_lock:
         db.execute(*args)
 
+def db_fetch_dicts(db, *args):
+    with db_query_lock:
+        curs = db.execute(*args)
+        desc = (n[0] for n in db.description)
+        for row in curs:
+            yield {k:v for (k, v) in zip(desc, row) if v is not None}
+
 class PullReqState:
     num = 0
     priority = 0
@@ -218,24 +225,26 @@ def parse_commands(body, username, repo_cfg, state, my_username, db, *, realtime
             state.rollup = word == 'rollup'
 
         elif word == 'force' and realtime:
-            with buildbot_sess(repo_cfg) as sess:
-                res = sess.post(repo_cfg['buildbot']['url'] + '/builders/_selected/stopselected', allow_redirects=False, data={
-                    'selected': repo_cfg['buildbot']['builders'],
-                    'comments': INTERRUPTED_BY_HOMU_FMT.format(int(time.time())),
-                })
+            if 'buildbot' in repo_cfg:
+                with buildbot_sess(repo_cfg) as sess:
+                    res = sess.post(repo_cfg['buildbot']['url'] + '/builders/_selected/stopselected', allow_redirects=False, data={
+                        'selected': repo_cfg['buildbot']['builders'],
+                        'comments': INTERRUPTED_BY_HOMU_FMT.format(int(time.time())),
+                    })
 
-            if 'authzfail' in res.text:
-                err = 'Authorization failed'
-            else:
-                mat = re.search('(?s)<div class="error">(.*?)</div>', res.text)
-                if mat:
-                    err = mat.group(1).strip()
-                    if not err: err = 'Unknown error'
+                if 'authzfail' in res.text:
+                    err = 'Authorization failed'
                 else:
-                    err = ''
-
-            if err:
-                state.add_comment(':bomb: Buildbot returned an error: `{}`'.format(err))
+                    mat = re.search('(?s)<div class="error">(.*?)</div>', res.text)
+                    if mat:
+                        err = mat.group(1).strip()
+                        if not err: err = 'Unknown error'
+                    else:
+                        err = ''
+                if err:
+                    state.add_comment(':bomb: Buildbot returned an error: `{}`'.format(err))
+            else:
+                state.add_comment(':disappointed: "force" is only available for buildbot')
 
         elif word == 'clean' and realtime:
             state.merge_sha = ''
@@ -299,6 +308,11 @@ def start_build(state, repo_cfgs, buildbot_slots, logger, db):
     elif 'travis' in repo_cfg:
         branch = repo_cfg.get('branch', {}).get('auto', 'auto')
         builders = ['travis']
+    elif 'quay' in repo_cfg:
+        branch = repo_cfg.get('branch', {}).get('auto', 'auto')
+        builders = ['quay']
+        # We do not notify quay here; we wait for push event from github instead
+        # this way we can be sure quay will be able to fetch merge commit
     else:
         raise RuntimeError('Invalid configuration')
 
@@ -449,7 +463,7 @@ def fetch_mergeability(mergeable_que):
             mergeable_que.task_done()
 
 def arguments():
-    parser = argparse.ArgumentParser(description =
+    parser = argparse.ArgumentParser(description=
                                      'A bot that integrates with GitHub and '
                                      'your favorite continuous integration service')
     parser.add_argument('-v', '--verbose',
@@ -505,15 +519,48 @@ def main():
         UNIQUE (repo, num)
     )''')
 
+    # label set automatically when creating repo
+    db_query(db, '''CREATE TABLE IF NOT EXISTS repo (
+        label TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        reviewers TEXT NOT NULL,
+        github TEXT NOT NULL,
+        branch TEXT,
+        builder TEXT NOT NULL,
+        builder_settings TEXT NOT NULL,
+        UNIQUE (label),
+        UNIQUE (owner, name)
+    )''')
+
     logger.info('Retrieving pull requests...')
 
-    for repo_label, repo_cfg in cfg['repo'].items():
-        repo = gh.repository(repo_cfg['owner'], repo_cfg['name'])
-
-        states[repo_label] = {}
-        repos[repo_label] = repo
+    # Initialize repo cfg from a) cfg b) db
+    # a) read cfg
+    for repo_label, repo_cfg in cfg.get('repo', {}).items():
+        # add key 'label' to be consistent with confs read from db
+        repo_cfg['label'] = repo_label
+        # keep builder settings structure in sync with those loaded from db
+        # add `builder` key to use as dispatch elsewhere
+        # Use first found builder settings as builder kind
+        repo_cfg['builder'] = next(k for k in ['quay', 'travis', 'buildbot']
+                                   if k in repo_cfg)
         repo_cfgs[repo_label] = repo_cfg
 
+    # b) load conf from db
+    for repo_cfg in db_fetch_dicts(db, 'SELECT * from repo'):
+        repo_label = repo_cfg['label']
+        builder_kind = repo_cfg['builder']
+        repo_cfg[builder_kind] = json.loads(repo_cfg.pop('builder_settings'))
+        # convert github/branches/reviewers from json:
+        for key in ['github', 'branches', 'reviewers']:
+            utils.update_in(repo_cfg, key, json.loads)
+        repo_cfgs[repo_label] = repo_cfg
+
+    for repo_label, repo_cfg in repo_cfgs.items():
+        repos[repo_label] = repo = gh.repository(repo_cfg['owner'],
+                                                 repo_cfg['name'])
+        states[repo_label] = {}
         for pull in repo.iter_pulls(state='open'):
             db_query(db, 'SELECT status FROM state WHERE repo = ? AND num = ?', [repo_label, pull.number])
             row = db.fetchone()
@@ -572,8 +619,12 @@ def main():
         if merge_sha:
             if 'buildbot' in repo_cfgs[repo_label]:
                 builders = repo_cfgs[repo_label]['buildbot']['builders']
-            else:
+            elif 'travis' in repo_cfgs[repo_label]:
                 builders = ['travis']
+            elif 'quay' in repo_cfgs[repo_label]:
+                builders = ['quay']
+            else:
+                RuntimeError('Invalid configuration!')
 
             state.init_build_res(builders, use_db=False)
             state.merge_sha = merge_sha
@@ -614,7 +665,10 @@ def main():
             return process_queue(states, repos, repo_cfgs, logger, buildbot_slots, db)
 
     from . import server
-    Thread(target=server.start, args=[cfg, states, queue_handler, repo_cfgs, repos, logger, buildbot_slots, my_username, db, repo_labels, mergeable_que]).start()
+    Thread(target=server.start, args=[cfg, states, queue_handler,
+                                      repo_cfgs, repos, logger, buildbot_slots,
+                                      my_username, db, repo_labels,
+                                      mergeable_que, gh]).start()
 
     Thread(target=fetch_mergeability, args=[mergeable_que]).start()
 
