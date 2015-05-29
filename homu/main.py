@@ -47,7 +47,7 @@ def db_query(db, *args):
 def db_fetch_dicts(db, *args):
     with db_query_lock:
         curs = db.execute(*args)
-        desc = (n[0] for n in db.description)
+        desc = [n[0] for n in db.description]
         for row in curs:
             yield {k:v for (k, v) in zip(desc, row) if v is not None}
 
