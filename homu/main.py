@@ -468,6 +468,7 @@ def arguments():
                                      'your favorite continuous integration service')
     parser.add_argument('-v', '--verbose',
                         action='store_true', help='Enable more verbose logging')
+    parser.add_argument('-c', '--config', default='cfg.toml', help='Confiagutation file')
 
     return parser.parse_args()
 
@@ -478,7 +479,7 @@ def main():
     logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
     logger.addHandler(logging.StreamHandler())
 
-    with open('cfg.toml') as fp:
+    with open(args.config) as fp:
         cfg = toml.loads(fp.read())
 
     gh = github3.login(token=cfg['github']['access_token'])
