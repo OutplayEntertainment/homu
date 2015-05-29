@@ -47,7 +47,7 @@ def db_query(db, *args):
 def db_fetch_dicts(db, *args):
     with db_query_lock:
         curs = db.execute(*args)
-        desc = (n[0] for n in db.description)
+        desc = [n[0] for n in db.description]
         for row in curs:
             yield {k:v for (k, v) in zip(desc, row) if v is not None}
 
@@ -468,6 +468,7 @@ def arguments():
                                      'your favorite continuous integration service')
     parser.add_argument('-v', '--verbose',
                         action='store_true', help='Enable more verbose logging')
+    parser.add_argument('-c', '--config', default='cfg.toml', help='Confiagutation file')
 
     return parser.parse_args()
 
@@ -478,7 +479,7 @@ def main():
     logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
     logger.addHandler(logging.StreamHandler())
 
-    with open('cfg.toml') as fp:
+    with open(args.config) as fp:
         cfg = toml.loads(fp.read())
 
     gh = github3.login(token=cfg['github']['access_token'])
@@ -491,7 +492,11 @@ def main():
     repo_labels = {}
     mergeable_que = Queue()
 
-    db_conn = sqlite3.connect('main.db', check_same_thread=False, isolation_level=None)
+    db_conn = sqlite3.connect(
+        cfg['database']['path'],
+        check_same_thread=False,
+        isolation_level=None
+    )
     db = db_conn.cursor()
 
     db_query(db, '''CREATE TABLE IF NOT EXISTS state (
