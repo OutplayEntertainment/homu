@@ -11,6 +11,8 @@ ENTRYPOINT ["/docker-entrypoint.sh"]
 
 VOLUME ["/usr/src/app"]
 
+RUN echo "test"
+
 EXPOSE 54856
 
 CMD ["homu"]
