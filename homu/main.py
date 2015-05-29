@@ -492,7 +492,11 @@ def main():
     repo_labels = {}
     mergeable_que = Queue()
 
-    db_conn = sqlite3.connect('main.db', check_same_thread=False, isolation_level=None)
+    db_conn = sqlite3.connect(
+        cfg['database']['path'],
+        check_same_thread=False,
+        isolation_level=None
+    )
     db = db_conn.cursor()
 
     db_query(db, '''CREATE TABLE IF NOT EXISTS state (

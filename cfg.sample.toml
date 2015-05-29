@@ -1,3 +1,7 @@
+[database]
+# It’s the full path to the database file
+path = ":memory:"
+
 [github]
 
 # Information for securely interacting with GitHub. These are found/generated
