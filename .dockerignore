@@ -1,4 +1,5 @@
 *.db
 *.egg-info/
+/homu/__pycache__/
 
 cfg.toml
