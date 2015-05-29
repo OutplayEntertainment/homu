@@ -1,0 +1,17 @@
+homu:
+    build: .
+    command: -c cfg.toml
+    volumes:
+        - .:/usr/src/app
+    ports:
+        - "54856:54856"
+
+nginx:
+    image: nginx:1.9.1
+    command: nginx -c /usr/src/app/nginx.conf -g "daemon off;"
+    volumes_from:
+        - homu
+    links:
+        - "homu:homu"
+    ports:
+        - "80:80"
