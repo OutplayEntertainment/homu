@@ -3,12 +3,14 @@ import github3
 import toml
 import json
 import re
+import os
 from . import utils
 import logging
 from threading import Thread, Lock
 import time
 import traceback
 import sqlite3
+import string
 import requests
 from contextlib import contextmanager
 from itertools import chain
@@ -480,7 +482,8 @@ def main():
     logger.addHandler(logging.StreamHandler())
 
     with open(args.config) as fp:
-        cfg = toml.loads(fp.read())
+        rendered = string.Template(fp.read()).substitute(**os.environ)
+        cfg = toml.loads(rendered)
 
     gh = github3.login(token=cfg['github']['access_token'])
 

@@ -665,6 +665,8 @@ def admin_add_repo():
     # TODO: validate builder_settings? With hook? oO
     try:
         repo = g.gh.repository(repo_cfg['owner'], repo_cfg['name'])
+        if repo is None:
+            abort(404, 'Repository not found, check permissions')
     except github3.models.GitHubError as e:
         abort(e.code, e.msg)
     # register new configuration early, so we can accept `ping` webhook from gh

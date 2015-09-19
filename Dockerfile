@@ -7,10 +7,9 @@ COPY . /usr/src/app
 RUN pip install -e .
 
 COPY docker-entrypoint.sh /
+COPY cfg.env.toml ./cfg.env.toml
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
 VOLUME ["/usr/src/app"]
 
-EXPOSE 54856
-
-CMD ["homu"]
+CMD ["homu", "-c", "./cfg.env.toml"]
