@@ -697,6 +697,7 @@ def admin_add_repo():
         lazy_debug(logger, lambda: 'Registered {} in builder {}: {}'.format(
             repo_label, repo_cfg['builder'], builder_settings))
     except Exception as e:
+        g.logger.warning("Exception while registering in builder: {}".format(e))
         unregister_and_forget(repo_label)
         # We want to return appropriate response codes when we can,
         # so we will catch github/requests errors
@@ -717,6 +718,7 @@ def admin_add_repo():
                   json.dumps(repo_cfg['branch']) if 'branch' in repo_cfg else None,
                   builder, json.dumps(builder_settings)])
     except sqlite3.Error:
+        g.logger.warning("Exception while saving to db: {}".format(e))
         unregister_and_forget(repo_label)
         raise
     # TODO: probably we want to fetch pull requests?

@@ -12,6 +12,4 @@ ENTRYPOINT ["/docker-entrypoint.sh"]
 
 EXPOSE 32323
 
-VOLUME ["/usr/src/app"]
-
 CMD ["homu", "-c", "./cfg.env.toml"]
