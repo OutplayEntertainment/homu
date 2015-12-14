@@ -660,7 +660,7 @@ def admin_add_repo():
     builder_settings = repo_cfg[builder]
     # Always build master/develop/auto
     builder_settings['build_branches'] = builder_settings.get('build_branches',
-                                                              []) + DEFAULT_BRANCHES
+                                                              DEFAULT_BRANCHES)
     repo_cfg[builder] = builder_settings
     # TODO: validate builder_settings? With hook? oO
     try:
