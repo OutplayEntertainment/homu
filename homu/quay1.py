@@ -176,6 +176,7 @@ class Repo(NamespacedResource):
                           headers=self.auth_header,
                           json={'method': 'webhook',
                                 'event': event,
+                                'eventConfig': {},
                                 'config': {'url': webhook_url}})
         r.raise_for_status()
         return self.web_hook(r.json()['uuid'])
