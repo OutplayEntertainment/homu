@@ -293,8 +293,10 @@ def unregister(g, repo, settings):
 
 
 def push_hook(g, push_event, settings):
-    ref = push_event['ref'][len('refs/heads/'):]
-    if ref in settings['build_branches']:
+    # build_branches can be set as "master", or "tags/*", or "tags/v*", etc
+    # ref in event can be in form of "refs/heads/*" or "refs/tags/*"
+    ref = push_event['ref']
+    if any(re.search(pat, ref) for pat in settings['build_branches']):
         # create push event
         # quay wants some fields in push event like avatar_url of author
         # and we have to request them :(
